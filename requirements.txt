@@ -3,3 +3,4 @@ python-dotenv
 dotenv
 feedparser 
 beautifulsoup4
+underthesea

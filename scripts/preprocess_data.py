@@ -2,7 +2,31 @@
 from pathlib import Path
 import re
 import unicodedata
-from underthesea import word_tokenize
+import os
+
+# Nếu sau này vẫn muốn fallback sang underthesea thì giữ lại import này
+# còn hiện tại ta dùng VnCoreNLP là chính.
+# from underthesea import word_tokenize
+
+import py_vncorenlp
+
+# scripts/preprocess_data.py (đặt gần đầu file)
+
+VI_STOPWORDS = {
+    # từ chức năng rất chung
+    "và", "trong", "với", "của", "là", "được", "tại", "từ", "cho", "đến",
+    "này", "kia", "đó", "này", "ấy", "này", "sẽ", "đã", "đang", "cũng",
+    "nhưng", "hay", "hoặc", "nếu", "thì", "rằng", "vì", "do", "khi",
+    "trên", "dưới", "giữa", "sau", "trước", "nơi", "nơi_đây", "nơi_này",
+
+    # đại từ / từ rất chung trong tin tức
+    "người", "ông", "bà", "anh", "chị", "họ", "chúng_ta", "chúng_tôi",
+    "một", "hai", "ba", "nhiều", "ít", "các", "những", "nhiều",
+    "năm", "tháng", "ngày", "hôm_nay", "hôm_qua",
+
+    # em có thể thêm/bớt dần khi xem kết quả
+}
+
 
 # 1. Gốc project (dùng cho các script khác)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +61,53 @@ TT_FOOTER_PATTERNS = [
     "Thêm chuyên mục, tăng trải nghiệm vớiTuổi Trẻ Sao",
     "Tuổi Trẻ Saonhằm từng bước nâng cao",
 ]
+
+
+# ================= VnCoreNLP word segmentation ================= #
+
+SEGMENTER = None  # sẽ load lazy, chỉ 1 lần
+
+
+def get_vncorenlp_segmenter():
+    """
+    Khởi tạo VnCoreNLP (chỉ 1 lần), dùng annotator wseg (word segmentation).
+    Dùng luôn model đã có sẵn trong PROJECT_ROOT / 'vncorenlp'.
+    """
+    global SEGMENTER
+    if SEGMENTER is None:
+        # 🔹 CHỈNH Ở ĐÂY: dùng thư mục vncorenlp nằm TRONG project
+        save_dir = PROJECT_ROOT / "vncorenlp"
+
+        # Nếu muốn an toàn, có thể tạo thư mục (nếu em chắc chắn đã có rồi thì dòng này không bắt buộc)
+        os.makedirs(save_dir, exist_ok=True)
+
+        # Không cần download_model nữa vì em đã có jar + models
+        # Nếu muốn vẫn có thể bật để tự tải khi thiếu:
+        # py_vncorenlp.download_model(save_dir=str(save_dir))
+
+        SEGMENTER = py_vncorenlp.VnCoreNLP(
+            annotators=["wseg"],
+            save_dir=str(save_dir),
+        )
+    return SEGMENTER
+
+
+def word_segment_tokens(text: str) -> list[str]:
+    """
+    Tách từ tiếng Việt bằng VnCoreNLP.
+
+    Trả về: list token phẳng, ví dụ:
+    "Mình quê ở Tiền Giang." ->
+        ["Mình", "quê", "ở", "Tiền_Giang", "."]
+    (dấu câu sau đó sẽ bị PUNCT_RE xử lý)
+    """
+    segmenter = get_vncorenlp_segmenter()
+    # VnCoreNLP trả về list các câu, mỗi câu là chuỗi có token cách nhau bởi space
+    sentences = segmenter.word_segment(text)
+    tokens: list[str] = []
+    for sent in sentences:
+        tokens.extend(sent.split())
+    return tokens
 
 
 # -------- Bước 0: Cắt bỏ footer / boilerplate -------- #
@@ -107,7 +178,7 @@ def clean_and_tokenize(text: str) -> str:
     - Đưa cả đoạn văn về trên 1 dòng
     - Xóa các khoảng cách thừa
     - Loại bỏ dấu câu (. , ; : ! ? …, ngoặc, gạch nối, ...)
-    - Tách từ tiếng Việt
+    - Tách từ tiếng Việt bằng VnCoreNLP
 
     KHÔNG xóa số, KHÔNG lọc stopword.
     Mục tiêu: chỉ chuẩn hóa, không làm mất thông tin nội dung.
@@ -115,26 +186,21 @@ def clean_and_tokenize(text: str) -> str:
     # Chuyển xuống dòng, tab thành space
     text = re.sub(r"[\r\n\t]", " ", text)
 
-    # Loại bỏ dấu câu: thay bằng space
-    text = PUNCT_RE.sub(" ", text)
+    # Tách từ trước rồi mới xử lý dấu câu cho chắc chắn
+    # (vì VnCoreNLP dùng dấu chấm để phân câu)
+    tokens = word_segment_tokens(text)
 
-    # Gom nhiều khoảng trắng thành 1
-    text = re.sub(r"\s+", " ", text).strip()
-
-    # Tách từ tiếng Việt (giữ nguyên số, chữ, dấu)
-    tokens = word_tokenize(text)
-
-    processed_tokens = []
+    # Bỏ dấu câu khỏi từng token (nếu muốn giữ số, chữ)
+    cleaned_tokens: list[str] = []
     for tok in tokens:
-        tok = tok.strip()
-        if not tok:
-            continue
+        # thay dấu câu trong token bằng space rồi gom lại
+        tok_no_punct = PUNCT_RE.sub(" ", tok)
+        # có thể sinh ra nhiều space -> tách lại
+        for sub in tok_no_punct.split():
+            cleaned_tokens.append(sub)
 
-        # Không lọc số, không lọc stopword
-        processed_tokens.append(tok)
-
-    # Đưa về 1 dòng: các token cách nhau 1 space
-    return " ".join(processed_tokens)
+    # Gom nhiều khoảng trắng bằng cách join lại = 1 space
+    return " ".join(cleaned_tokens)
 
 
 # -------- Hàm chính dùng trong toàn project -------- #
@@ -146,9 +212,9 @@ def preprocess_text(raw_text: str) -> str:
     1. Chuẩn hóa unicode
     2. Chuẩn hóa cách gõ dấu tiếng Việt
     3. Chuẩn hóa chữ viết thường
-    4. Tách từ tiếng Việt
-    5. Đưa cả đoạn văn về trên 1 dòng, xóa các khoảng cách thừa
-       + loại bỏ dấu chấm, dấu phẩy, dấu câu.
+    4. Tách từ tiếng Việt (VnCoreNLP)
+    5. Đưa cả đoạn văn về trên 1 dòng, xóa các khoảng cách thừa,
+       loại bỏ dấu câu.
     """
     # Bước 0: bỏ footer/UI
     text = strip_boilerplate_lines(raw_text)
@@ -162,7 +228,7 @@ def preprocess_text(raw_text: str) -> str:
     # Bước 3: chữ thường
     text = normalize_case(text)
 
-    # Bước 4 + 5: tách từ, đưa về 1 dòng (đã bỏ dấu câu)
+    # Bước 4 + 5: tách từ + bỏ dấu câu + gom 1 dòng
     text = clean_and_tokenize(text)
 
     return text

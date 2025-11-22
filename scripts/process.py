@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 
-from preprocess_data import preprocess_text, PROJECT_ROOT
+from preprocess_data import preprocess_text, PROJECT_ROOT, VI_STOPWORDS
 
 INPUT_DIR = PROJECT_ROOT / "data" / "input_nifi"
 PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
